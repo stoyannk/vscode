@@ -97,6 +97,83 @@ class VSCodeNodeModuleFactory implements INodeModuleFactory {
 	) {
 	}
 
+	private decorateApi(ext : IExtensionDescription, o : typeof vscode) {
+		const decorateFuncs = (nmspc : any) => {
+			for(let prop in nmspc) {
+				const descriptor = 	Object.getOwnPropertyDescriptor(nmspc, prop);
+				if (descriptor === undefined) {
+					continue;
+				}
+
+				let originalMethod : any;
+				let isGetter = false;
+				if (descriptor.value) {
+					originalMethod = descriptor.value;
+				} else if (descriptor.get) {
+					originalMethod = descriptor.get;
+					isGetter = true;
+				} else {
+					continue;
+				}
+
+				if (originalMethod instanceof Function === false) {
+					continue;
+				}
+
+				const decoration = (...args: any[]) => {
+					// TODO: Proper allowlists and checks on API access come here
+					// Test disabling a function in a specific extension
+					if (ext.name === 'helloworld-sample'
+					//&& prop === 'showInformationMessage'
+					&& prop === 'activeTextEditor') {
+						throw new Error(`[${ext.identifier.value}]: Is trying to use a fobidden API`);
+					}
+				};
+
+				const isAsync = originalMethod.constructor.name === 'AsyncFunction';
+				let patched : any;
+				if (isAsync) {
+					patched = async function (...args: any[]) {
+						decoration(args);
+						return await originalMethod.apply(nmspc, args);;
+					};
+				} else {
+					patched = function (...args: any[]) {
+						decoration(args);
+						return originalMethod.apply(nmspc, args);
+					};
+				}
+				if (isGetter) {
+					descriptor.get = patched;
+				} else {
+					descriptor.value = patched;
+				}
+				Object.defineProperty(nmspc, prop, descriptor);
+			}
+		};
+
+		const namespaces = [
+			'window',
+			'commands',
+			'debug',
+			'extensions',
+			'authentication',
+			'tasks',
+			/*'env', */ // Note: env is a frozen object (look at extHost.api.impl.ts, search `freeze`).
+			'workspace',
+			'languages',
+			'scm',
+			'comment',
+			'comments',
+			'notebook'
+		];
+		for(let prop in o) {
+			if (namespaces.includes(prop)) {
+				decorateFuncs((o as any)[prop]);
+			}
+		}
+	}
+
 	public load(_request: string, parent: URI): any {
 
 		// get extension id from filename and api for extension
@@ -105,6 +182,7 @@ class VSCodeNodeModuleFactory implements INodeModuleFactory {
 			let apiImpl = this._extApiImpl.get(ExtensionIdentifier.toKey(ext.identifier));
 			if (!apiImpl) {
 				apiImpl = this._apiFactory(ext, this._extensionRegistry, this._configProvider);
+				this.decorateApi(ext, apiImpl);
 				this._extApiImpl.set(ExtensionIdentifier.toKey(ext.identifier), apiImpl);
 			}
 			return apiImpl;
